@@ -30,6 +30,7 @@ export const useAppSettingsStore = create<AppSettingsState>(set => ({
       comment_sort: 'asc',
       cookie_import: false,
       pot_provider_url: null,
+      youtube_api_key: null,
       throttledratelimit: null,
       extractor_lang: null,
       integrate_ryd: false,

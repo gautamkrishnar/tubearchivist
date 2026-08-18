@@ -70,6 +70,7 @@ const SettingsApplication = () => {
   const [cookieFormData, setCookieFormData] = useState<string>('');
   const [showCookieForm, setShowCookieForm] = useState<boolean>(false);
   const [potProviderUrl, setPotProviderUrl] = useState<string | null>(null);
+  const [youtubeApiKey, setYoutubeApiKey] = useState<string | null>(null);
 
   // Integrations
   const [showApiToken, setShowApiToken] = useState(false);
@@ -124,6 +125,7 @@ const SettingsApplication = () => {
 
     // Cookie
     setPotProviderUrl(appSettingsConfigData?.downloads.pot_provider_url || null);
+    setYoutubeApiKey(appSettingsConfigData?.downloads.youtube_api_key || null);
 
     // Integrations
     setDownloadDislikes(appSettingsConfigData?.downloads.integrate_ryd || false);
@@ -749,6 +751,28 @@ const SettingsApplication = () => {
                   value={potProviderUrl}
                   setValue={setPotProviderUrl}
                   oldValue={appSettingsConfig.downloads.pot_provider_url}
+                  updateCallback={handleUpdateConfig}
+                />
+              </div>
+              <div className="settings-box-wrapper">
+                <div>
+                  <p>YouTube Data API Key</p>
+                  {userConfig.show_help_text && (
+                    <div className="help-text">
+                      <p>
+                        Used to fetch channel video lists via the YouTube Data API v3 instead of
+                        scraping. Multiple keys can be provided as a comma-separated list — they
+                        will be used in round-robin order.
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <InputConfig
+                  type="text"
+                  name="downloads.youtube_api_key"
+                  value={youtubeApiKey}
+                  setValue={setYoutubeApiKey}
+                  oldValue={appSettingsConfig.downloads.youtube_api_key}
                   updateCallback={handleUpdateConfig}
                 />
               </div>

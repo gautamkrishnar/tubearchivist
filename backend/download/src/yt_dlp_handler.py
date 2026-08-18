@@ -226,7 +226,13 @@ class VideoDownloader(DownloaderBase):
 
     @staticmethod
     def _handle_error(youtube_id, message):
-        """store error message"""
+        """store error message — transient errors keep the video pending for auto-retry"""
+        transient = [
+            "This live event has ended",   # VOD still being processed by YouTube
+        ]
+        if any(t in message for t in transient):
+            print(f"{youtube_id}: transient error, keeping pending for retry: {message[:80]}")
+            return
         data = {"doc": {"message": message}}
         _, _ = ElasticWrap(f"ta_download/_update/{youtube_id}").post(data=data)
 

@@ -4,15 +4,23 @@ Functionality:
 - handle playlist subscriptions
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+
 from appsettings.src.config import AppConfig
 from channel.src.index import YoutubeChannel
 from channel.src.remote_query import VideoQueryBuilder
-from common.src.helper import get_channels, get_playlists
+from channel.src.youtube_api import get_channel_videos
+from common.src.helper import get_channels, get_duration_str, get_playlists
 from common.src.urlparser import ParsedURLType, Parser
 from download.src.queue import PendingList
+from download.src.thumbnails import ThumbManager
 from playlist.src.index import YoutubePlaylist
 from video.src.constants import VideoTypeEnum
 from video.src.index import YoutubeVideo
+
+# Max parallel channel scans.
+_MAX_WORKERS = 10
 
 
 class ChannelSubscription:
@@ -34,6 +42,13 @@ class ChannelSubscription:
         if not all_channels:
             return 0
 
+        api_key_raw = self.config["downloads"].get("youtube_api_key")
+        if api_key_raw:
+            keys = [k.strip() for k in api_key_raw.split(",") if k.strip()]
+            if keys:
+                return self._find_missing_via_api(all_channels, keys)
+
+        # yt-dlp fallback path (unchanged)
         all_channel_urls = self._process_channel_urls(all_channels)
 
         if self.task:
@@ -45,26 +60,161 @@ class ChannelSubscription:
             auto_start=self.config["subscriptions"].get("auto_start", False),
             flat=self.config["subscriptions"].get("extract_flat", False),
         )
-        added = pending_handler.parse_url_list()
+        return pending_handler.parse_url_list()
 
+    def _build_channel_tasks(
+        self, all_channels: list[dict]
+    ) -> list[tuple[str, dict[str, int | None]]]:
+        """return [(channel_id, {vid_type: limit, ...}), ...] respecting overwrites"""
+        tasks = []
+        for channel in all_channels:
+            tabs = channel.get("channel_tabs") or []
+            if not tabs:
+                continue
+            enums = [getattr(VideoTypeEnum, t.upper()) for t in tabs]
+            queries = VideoQueryBuilder(
+                config=self.config,
+                channel_overwrites=channel.get("channel_overwrites", {}),
+            ).build_queries(vid_types=enums)
+            if queries:
+                limits = {vt.value: lim for vt, lim in queries}
+                tasks.append((channel["channel_id"], limits))
+        return tasks
+
+    def _find_missing_via_api(
+        self, all_channels: list[dict], keys: list[str]
+    ) -> int:
+        """
+        Fast parallel API path:
+          1. RSS pre-filter — skip channels with no new content (free, zero quota)
+          2. Cooldown — skip channels scanned within _CHANNEL_SCAN_COOLDOWN seconds
+          3. Parallel channel video list fetch (ThreadPoolExecutor)
+          4. Deduplicate + filter already-indexed/queued
+          5. Batch metadata fetch (50 videos per API call)
+          6. Bulk write to ta_download
+        """
+        channel_tasks = self._build_channel_tasks(all_channels)
+        if not channel_tasks:
+            return 0
+
+        # Build to_skip BEFORE scanning — pass it to get_channel_videos so it
+        # can skip already-indexed videos during the scan and stop early.
+        pending = PendingList(
+            youtube_ids=[],
+            task=self.task,
+            auto_start=self.config["subscriptions"].get("auto_start", False),
+        )
+        pending.get_download()
+        pending.get_indexed()
+        pending.get_channels()
+        to_skip = set(pending.to_skip)
+
+        total_channels = len(channel_tasks)
+        print(f"[api-scan] scanning {total_channels} channels ({len(to_skip)} already in TA)")
+        if self.task:
+            self.task.send_progress([f"Scanning {total_channels} channels via YouTube API"])
+
+        # Parallel channel scans — get_channel_videos returns full metadata for
+        # NEW videos only (already skips to_skip internally, early-stops when
+        # a full page is all-indexed)
+        all_found: list[dict] = []
+        done = 0
+        with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, total_channels)) as executor:
+            futures = {
+                executor.submit(get_channel_videos, ch_id, keys, limits, to_skip): ch_id
+                for ch_id, limits in channel_tasks
+            }
+            for future in as_completed(futures):
+                ch_id = futures[future]
+                done += 1
+                if self.task:
+                    self.task.send_progress(
+                        [f"Channel scan {done}/{total_channels}"],
+                        progress=done / total_channels * 0.8,
+                    )
+                try:
+                    result = future.result()
+                    for type_vids in result.values():
+                        all_found.extend(type_vids)
+                except Exception as err:
+                    print(f"[api-scan] {ch_id}: scan failed: {err}")
+
+        print(f"[api-scan] {len(all_found)} new videos found across all channels")
+
+        if not all_found:
+            return 0
+
+        # Deduplicate (channel with multiple tabs may return same video in different type buckets)
+        seen: set[str] = set()
+        new_videos: list[dict] = []
+        for v in all_found:
+            if v["id"] not in seen:
+                seen.add(v["id"])
+                new_videos.append(v)
+
+        print(f"[api-scan] {len(new_videos)} unique new videos to queue")
+
+        # Build pending entries from full metadata returned by get_channel_videos
+        # (no separate metadata batch call needed — already fetched during scan)
+        all_channels_set = set(pending.all_channels or [])
+        now = int(datetime.now().timestamp())
+        added = 0
+
+        for meta in new_videos:
+            vid_id = meta["id"]
+
+            if meta.get("availability") in ("subscriber_only", "premium_only", "needs_auth"):
+                print(f"[api-scan] {vid_id}: skip members-only/premium")
+                continue
+
+            if meta.get("live_status") in ("is_live", "is_upcoming"):
+                print(f"[api-scan] {vid_id}: skip is_live/is_upcoming")
+                continue
+
+            vid_type = meta.get("vid_type", "videos")
+            thumb_url = meta.get("thumbnail") or ""
+
+            entry = {
+                "channel_id": meta["channel_id"],
+                "channel_indexed": meta["channel_id"] in all_channels_set,
+                "channel_name": meta["channel"],
+                "duration": get_duration_str(meta.get("duration", 0)),
+                "published": meta.get("timestamp") or meta.get("upload_date"),
+                "timestamp": now,
+                "title": meta["title"],
+                "vid_thumb_url": thumb_url or None,
+                "vid_type": vid_type,
+                "youtube_id": vid_id,
+            }
+
+            if thumb_url:
+                ThumbManager(item_id=vid_id).download_video_thumb(thumb_url)
+
+            pending.missing_videos.append(entry)
+
+            if len(pending.missing_videos) >= 50:
+                added += pending.add_to_pending()
+                pending.missing_videos = []
+
+        if pending.missing_videos:
+            added += pending.add_to_pending()
+            pending.missing_videos = []
+
+        print(f"[api-scan] complete — added {added} new videos to queue")
         return added
 
     def _process_channel_urls(self, all_channels: list[dict]):
-        """process channels, build queries"""
-
+        """build ParsedURLType list for yt-dlp fallback path"""
         all_channel_urls: list[ParsedURLType] = []
-
         for channel in all_channels:
             channel_tabs = channel["channel_tabs"]
             if not channel_tabs:
                 continue
-
             enums = [getattr(VideoTypeEnum, i.upper()) for i in channel_tabs]
             queries = VideoQueryBuilder(
                 config=self.config,
                 channel_overwrites=channel.get("channel_overwrites", {}),
             ).build_queries(vid_types=enums)
-
             for vid_type, limit in queries:
                 all_channel_urls.append(
                     ParsedURLType(
@@ -74,7 +224,6 @@ class ChannelSubscription:
                         limit=limit,
                     )
                 )
-
         return all_channel_urls
 
 
@@ -111,9 +260,7 @@ class PlaylistSubscription:
             auto_start=self.config["subscriptions"].get("auto_start", False),
             flat=self.config["subscriptions"].get("extract_flat", False),
         )
-        added = pending_handler.parse_url_list()
-
-        return added
+        return pending_handler.parse_url_list()
 
 
 class SubscriptionScanner:
@@ -171,7 +318,6 @@ class SubscriptionHandler:
             return
 
         if item["type"] == "video":
-            # extract channel id from video
             video = YoutubeVideo(item["url"])
             video.get_from_youtube()
             video.process_youtube_meta()

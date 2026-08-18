@@ -147,7 +147,8 @@ class PendingList(PendingIndex):
             if self.task and self.task.is_stopped():
                 break
 
-            rand_sleep(self.config)
+            if not self.config["downloads"].get("youtube_api_key"):
+                rand_sleep(self.config)
 
         return self.added
 
@@ -349,7 +350,8 @@ class PendingList(PendingIndex):
             return None
 
         ThumbManager(item_id=url).download_video_thumb(to_add["vid_thumb_url"])
-        rand_sleep(self.config)
+        if not self.config["downloads"].get("youtube_api_key"):
+            rand_sleep(self.config)
 
         return to_add
 
@@ -366,6 +368,10 @@ class PendingList(PendingIndex):
 
         if video_data.get("live_status") in ["is_upcoming", "is_live"]:
             print(f"{youtube_id}: skip is_upcoming or is_live")
+            return None
+
+        if video_data.get("availability") in ["subscriber_only", "premium_only", "needs_auth"]:
+            print(f"{youtube_id}: skip members-only/premium video")
             return None
 
         to_add = {

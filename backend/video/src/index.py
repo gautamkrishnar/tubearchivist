@@ -10,6 +10,7 @@ from datetime import datetime
 
 import requests
 from channel.src import index as ta_channel
+from channel.src.youtube_api import get_video_meta, pick_api_key
 from common.src.env_settings import EnvironmentSettings
 from common.src.helper import get_duration_sec, get_duration_str, randomizor
 from common.src.index_generic import YouTubeItem
@@ -157,6 +158,26 @@ class YoutubeVideo(YouTubeItem, YoutubeSubtitle):
         self.channel_id = False
         self.video_type = video_type
         self.offline_import = False
+
+    def get_from_youtube(self, obs_overwrite=None):
+        """use YouTube Data API when configured, fall back to yt-dlp"""
+        api_key_raw = self.config["downloads"].get("youtube_api_key")
+        if api_key_raw:
+            keys = [k.strip() for k in api_key_raw.split(",") if k.strip()]
+            if keys:
+                print(f"{self.youtube_id}: fetching metadata via YouTube Data API")
+                try:
+                    meta = get_video_meta(self.youtube_id, pick_api_key(keys))
+                    if meta:
+                        print(f"{self.youtube_id}: metadata fetched via YouTube API OK")
+                        self.youtube_meta = meta
+                        return
+                    print(f"{self.youtube_id}: not found via YouTube API, falling back to yt-dlp")
+                except Exception as err:
+                    print(f"{self.youtube_id}: YouTube API error: {err} — falling back to yt-dlp")
+
+        print(f"{self.youtube_id}: fetching metadata via yt-dlp")
+        super().get_from_youtube(obs_overwrite)
 
     def build_json(self, youtube_meta_overwrite=False, media_path=False):
         """build json dict of video"""

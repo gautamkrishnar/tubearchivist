@@ -13,4 +13,4 @@ redis==7.4.0
 requests==2.34.2
 ryd-client==0.0.6
 uvicorn==0.51.0
-yt-dlp[default]==2026.7.4
+yt-dlp[default]
