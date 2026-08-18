@@ -1,6 +1,7 @@
 """build queries for video extraction from channel subscriptions"""
 
 from appsettings.src.config import AppConfigType
+from channel.src.youtube_api import get_channel_videos
 from download.src.yt_dlp_base import YtWrap
 from video.src.constants import VideoTypeEnum
 
@@ -116,12 +117,26 @@ def get_last_channel_videos(
     if not queries:
         return last_videos
 
+    api_keys_raw = config["downloads"].get("youtube_api_key")
+    api_keys = [k.strip() for k in api_keys_raw.split(",") if k.strip()] if api_keys_raw else []
+
+    if api_keys:
+        try:
+            limits = {vid_type_enum.value: limit_amount for vid_type_enum, limit_amount in queries}
+            combined = get_channel_videos(channel_id, api_keys, limits)
+            for type_videos in combined.values():
+                last_videos.extend(type_videos)
+            return last_videos
+        except Exception as err:
+            print(f"{channel_id}: YouTube API fetch failed ({err}), falling back to yt-dlp")
+
     for vid_type_enum, limit_amount in queries:
+        vid_type = vid_type_enum.value
+
         obs: dict[str, bool | str] = {
             "skip_download": True,
             "extract_flat": True,
         }
-        vid_type = vid_type_enum.value
 
         if limit is not None:
             obs["playlist_items"] = f":{limit_amount}:1"

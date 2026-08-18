@@ -42,6 +42,7 @@ class DownloadsConfigType(TypedDict):
     comment_sort: Literal["top", "new"] | None
     cookie_import: bool
     pot_provider_url: str | None
+    youtube_api_key: str | None
     throttledratelimit: int | None
     extractor_lang: str | None
     integrate_ryd: bool
@@ -81,7 +82,7 @@ class AppConfig:
             "limit_speed": None,
             "sleep_interval": 10,
             "autodelete_days": None,
-            "format": None,
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
             "format_sort": None,
             "add_metadata": False,
             "subtitle": None,
@@ -91,6 +92,7 @@ class AppConfig:
             "comment_sort": "top",
             "cookie_import": False,
             "pot_provider_url": None,
+            "youtube_api_key": None,
             "throttledratelimit": None,
             "extractor_lang": None,
             "integrate_ryd": False,
@@ -115,7 +117,13 @@ class AppConfig:
 
     def update_config(self, data: dict) -> AppConfigType:
         """update single config value"""
-        new_config = self.config.copy()
+        # always reload from ES before merging so we never overwrite values
+        # that were changed after this AppConfig instance was created
+        try:
+            new_config = self.get_config()
+        except ValueError:
+            new_config = self.config.copy()
+
         for key, value in data.items():
             if (
                 isinstance(value, dict)

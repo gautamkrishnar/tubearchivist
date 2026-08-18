@@ -23,6 +23,7 @@ export type AppSettingsConfigType = {
     comment_sort: string;
     cookie_import: boolean;
     pot_provider_url: string | null;
+    youtube_api_key: string | null;
     throttledratelimit: number | null;
     extractor_lang: string | null;
     integrate_ryd: boolean;
