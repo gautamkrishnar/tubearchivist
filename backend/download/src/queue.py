@@ -370,6 +370,11 @@ class PendingList(PendingIndex):
             print(f"{youtube_id}: skip is_upcoming or is_live")
             return None
 
+        thumb = video_data.get("vid_thumb_url") or video_data.get("thumbnail") or ""
+        if "_live.jpg" in thumb:
+            print(f"{youtube_id}: skip was_live with unprocessed replay")
+            return None
+
         if video_data.get("availability") in ["subscriber_only", "premium_only", "needs_auth"]:
             print(f"{youtube_id}: skip members-only/premium video")
             return None
