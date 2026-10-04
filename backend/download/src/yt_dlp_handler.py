@@ -6,8 +6,10 @@ functionality:
 - move to archive
 """
 
+import json
 import os
 import shutil
+import subprocess
 from datetime import datetime
 
 from appsettings.src.config import AppConfig
@@ -213,6 +215,13 @@ class VideoDownloader(DownloaderBase):
         success, message = YtWrap(obs, self.config).download(youtube_id)
         if not success:
             self._handle_error(youtube_id, message)
+            return False
+
+        cached_file = os.path.join(dl_cache, f"{youtube_id}.mp4")
+        if os.path.exists(cached_file) and not self._check_stream_durations(cached_file, youtube_id):
+            print(f"{youtube_id}: partial download, keeping pending for retry")
+            os.remove(cached_file)
+            return False
 
         if self.obs["writethumbnail"]:
             # webp files don't get cleaned up automatically
@@ -223,6 +232,47 @@ class VideoDownloader(DownloaderBase):
                 os.remove(file_path)
 
         return success
+
+    @staticmethod
+    def _check_stream_durations(file_path: str, youtube_id: str) -> bool:
+        """detect partial live replay downloads by comparing stream durations"""
+        cmd = [
+            "ffprobe", "-v", "quiet",
+            "-print_format", "json",
+            "-show_streams",
+            file_path,
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            data = json.loads(result.stdout)
+        except Exception as err:
+            print(f"{youtube_id}: ffprobe duration check failed: {err}")
+            return True
+
+        durations: dict[str, float] = {}
+        for stream in data.get("streams", []):
+            codec_type = stream.get("codec_type")
+            duration = stream.get("duration")
+            if codec_type in ("video", "audio") and duration:
+                durations[codec_type] = float(duration)
+
+        if len(durations) < 2:
+            return True
+
+        video_dur = durations["video"]
+        audio_dur = durations["audio"]
+        if audio_dur == 0:
+            return True
+
+        ratio = video_dur / audio_dur
+        if ratio < 0.95:
+            print(
+                f"{youtube_id}: stream duration mismatch "
+                f"video={video_dur:.1f}s audio={audio_dur:.1f}s ratio={ratio:.2f}"
+            )
+            return False
+
+        return True
 
     @staticmethod
     def _handle_error(youtube_id, message):
