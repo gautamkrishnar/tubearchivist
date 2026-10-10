@@ -82,7 +82,7 @@ class AppConfig:
             "limit_speed": None,
             "sleep_interval": 10,
             "autodelete_days": None,
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
             "format_sort": None,
             "add_metadata": False,
             "subtitle": None,
